@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+
+##race conditions abound here -- job may change state inbetween querying it and bstop/bresume; just let it write an error and keep going
+#set -e
+
+helpstr="\
+NAME
+    limit_running_jobs - periodically run bstop and/or bresume to maintain a set number of running jobs
+
+SYNOPSIS
+    limit_running_jobs MAX_NUMBER_ALLOWED_TO_RUN BJOBS2_SELECTION_OPTIONS
+
+DESCRIPTION
+    n/a
+
+OPTIONS
+    -h, --help
+        Print this help.
+
+REQUIREMENTS
+    n/a
+
+OPTIONS
+    -h, --help
+        Print this help.
+"
+
+getopt -q -l help -o h -- "$@" | egrep -q '^ -h|^ --help' && echo -n "$helpstr" && exit
+
+prefix=''  #set this to 'echo' in order to just print the commands; leave as the empty string in order to run like normal
+
+SLEEP_INTERVAL=60  #seconds
+
+if [ "$#" -eq 0 ]; then
+	echo "*** ERROR *** must provide the maximum number of jobs to allow to run" >&2
+	exit 1
+fi
+
+MAX_RUNNING="$1"
+shift
+
+if [ "$MAX_RUNNING" -le 0 ]>/dev/null; then
+	echo "*** ERROR *** given maximum number of jobs [$MAX_RUNNING] is not an integer greater than zero" >&2
+	exit 1
+fi
+
+if [ "$#" -eq 0 ]; then
+	echo "*** ERROR *** must provide arguments to be passed to bjobs2 (e.g. -u USERNAME)" >&2
+	exit 1
+fi
+
+set -u
+
+#---
+
+test "$(uname)" = Darwin && xargsnrie='' || xargsnrie='-r'
+
+while true; do
+	jobids_r="$(bjobs2 "$@" -r -o jobid | sort)"
+	num_r="$(echo "$jobids_r" | wc -l)"
+	jobids_s="$(bjobs2 "$@" -s -o 'jobid state' | grep -P 'USUSP|PSUSP' | awk '{print $1}' | sort)"  #-s pulls in SSUSP, too, which we don't want to touch
+	num_s="$(echo "$jobids_s" | wc -l)"
+
+	if   [ "$num_r" -gt $MAX_RUNNING ]; then
+		date
+		echo "$jobids_r" | tail -n $(( $num_r - $MAX_RUNNING )) | xargs $xargsnrie $prefix bstop
+	elif [ "$num_r" -lt $MAX_RUNNING ] && [ "$num_s" -gt 0 ]; then
+		date
+		echo "$jobids_s" | head -n $(( $MAX_RUNNING - $num_r )) | xargs $xargsnrie $prefix bresume
+	fi
+
+	sleep "$SLEEP_INTERVAL"
+done
