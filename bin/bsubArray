@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+set -e
+
+helpstr="\
+NAME
+    bsubArray - split a range of indices over an array of jobs
+
+SYNOPSIS
+    bsubArray --start INT1 --end INT2 --jobs NJOBS TEMPLATE_FILE
+
+DESCRIPTION
+    This is for tasks that loop over consecutively numbered files or other such 
+    numbered inputs that are too small to warrant individual jobs for each one, 
+    but too large to all be done in one job.  This script will create and 
+    submit a job array where each job gets a subset of indices to work on.
+
+    With this approach, each job in the array is expected to handle a subset 
+    of consecutively numbered inputs out of the total range.  This script will 
+    take the range [INT1,INT2] and divide it as evenly as possible over NJOBS 
+    jobs.  The given TEMPLATE_FILE should be a \`normal' job submission 
+    description, in the sense that it would work with \`bsub < TEMPLATE_FILE', 
+    except:
+
+        - It must have a \`#BSUB -J ...' line that specifies a name (and not a 
+          job array indexList).
+        
+        - It may contain the strings \$START and \$END, which, for each job, 
+          will be replaced by the starting integer and ending integer, 
+          respectively, of the subset of integers given to the individual job.
+        
+        - It may contain the string \$WIDTH, which will be replaced by the 
+          number of characters in the number INT2, or the explicit number 
+          specified by --width, if provided.  This is useful for coding 
+          zero-padding logic in the TEMPLATE_FILE.
+    
+    For example, a TEMPLATE_FILE named mytemplate might contain:
+
+        #BSUB -J myjob
+        #BSUB -o lsf_out.\$START
+        #BSUB -e lsf_err.\$START
+        #BSUB -q short_serial
+
+        for i in \$(seq \$START \$END); do
+            myprog \$i >> out.\$START 2>> err.\$START
+        done
+    
+    This script, if invoked as, for example:
+        
+        bsubArray --start=5000 --end=10000 --jobs=30 mytemplate
+    
+    will create a 30-job job array where job indices correspond to the 
+    beginning of the range assigned to the individual job.  Each job will loop 
+    over 166 or 167 values out of the total range, running myprog for each 
+    value.  (See the EXAMPLE below for the exact job array this creates.)
+
+    Note that \$START and \$END will not be zero-padded (i.e. prefixed with 
+    zeros so that all integers have the same number of characters).  However, 
+    seq has a -w option which will do this, or you could use seq -f%0\${WIDTH}g 
+    (maybe combined with the --width option to this script) to do more 
+    explicit zero-padding.
+
+    Note also that bash brace expansion (e.g. {\$START..\$END}) will not work 
+    here (since brace expansion is done before variable expansion).
+
+    The string \$END is not supported in #BSUB lines.
+
+OPTIONS
+    -s, --start=INT1
+        The start of the total range.
+    
+    -e, --end=INT2
+        The end of the total range.
+
+    -j, --jobs=NJOBS
+        The number of jobs to split the range over.
+    
+    -w, --width=W
+        Substitute occurrences of the string \$WIDTH in the template with the 
+        number W as opposed to the number of characters in the number 
+        specificed by --end.
+    
+    -p, --print-only
+        Print the job array submission file that's built, but don't actually 
+        submit it.
+    
+    -h, --help
+        Show this help.
+
+EXAMPLE
+    A TEMPLATE_FILE named mytemplate might contain:
+
+        #BSUB -J myjob
+        #BSUB -o lsf_out.\$START
+        #BSUB -e lsf_err.\$START
+        #BSUB -q short_serial
+
+        for i in \$(seq \$START \$END); do
+            myprog \$i >> out.\$START 2>> err.\$START
+        done
+    
+    This script, if invoked as, for example:
+        
+        bsubArray --start=5000 --end=10000 --jobs=30 mytemplate
+
+    will create and submit the following job array:
+
+        #BSUB -J myjob[5000-6493:166,6494-10000:167]
+        #BSUB -o lsf_out.%I
+        #BSUB -e lsf_err.%I
+        #BSUB -q short_serial
+
+        for i in \$(seq \${LSB_JOBINDEX} \$[\${LSB_JOBINDEX}+(\${LSB_JOBINDEX}<6494?165:166)]); do
+            myprog \$i >> out.\${LSB_JOBINDEX} 2>> err.\${LSB_JOBINDEX}
+        done
+
+AUTHOR
+    John Brunelle
+    Harvard FAS Research Computing
+"
+
+#variable names:
+#	j: number of jobs
+#	n: number of integers
+#	d: step (number of integers handled by a job)
+#	s: starting integer for one step size
+#	e: ending integer for one step size
+#unless the total number of integers is evenly divisible by the number of jobs, there will be two groups of jobs with different step sizes, hence suffices 1 and 2 on the variables
+
+args=$(getopt -l start:,end:,jobs:,width:,print-only,help -o s:e:j:w:ph -- "$@")
+if [ $? -ne 0 ]; then
+	exit 1  #(getopt will have written an error message)
+fi
+
+eval set -- "$args"
+
+while [ ! -z "$1" ]; do
+	case "$1" in
+		-s | --start)
+			s1=$2
+			shift
+			;;
+		-e | --end)
+			e2=$2
+			shift
+			;;
+		-j | --jobs)
+			jt=$2
+			shift
+			;;
+		-w | --width)
+			width=$2
+			shift
+			;;
+		-p | --print-only)
+			target=cat
+			;;
+
+		-h | --help)
+			echo -n "$helpstr"
+			exit 0
+			;;
+		--) shift
+			break
+			;;
+	esac
+	shift
+done
+
+if [ -z "$width" ]; then width=$(echo -n $e2 | wc -c); fi
+
+template="$1"  #if not given, this will read from stdin
+if [ -z "$target" ]; then target=bsub; fi
+
+#sanity checks
+if [ -z "$s1" -o -z "$e2" -o -z "$jt" ]; then
+	echo "*** ERROR *** --start, --end, --jobs, and a template must all be specified" >&2
+	exit 1
+fi
+if [ "$s1" -gt "$e2" ]; then
+	echo "*** ERROR *** --start cannot be greater than --end" >&2
+	exit 1
+fi
+if [ -n "$template" ]; then
+	if ! grep -q '^#BSUB[ \t]*-J' "$template"; then
+		echo "*** ERROR *** [$template] has no \`BSUB -J...' line" >&2
+		exit 1
+	fi
+	if grep -q '^#BSUB' "$template" | grep -q -F '$END'; then
+		echo "*** ERROR *** \$END is not supported in #BSUB lines" >&2
+		exit 1
+	fi
+fi
+	
+
+if [ -n "$jt" ]; then
+	nt=$[ $e2 - $s1 + 1 ]
+	d1=$[ $nt / $jt ]
+	d2=$[ $d1 + 1 ]
+	s2=$[ $s1 + ( $jt - $nt % $jt ) * $d1 ]
+	e1=$[ $s2 - 1]
+	#(all *2 numbers are bogus if nt%jt==0)
+
+	d1m1=$[ $d1 - 1 ]
+	d2m1=$[ $d2 - 1 ]
+fi
+
+if [ $[ $nt % $jt ] -eq 0 ]; then
+	array="[$s1-$e1:$d1]"
+	START="\${LSB_JOBINDEX}"
+	END="\$[\${LSB_JOBINDEX}+$d1m1]"
+else
+	array="[$s1-$e1:$d1,$s2-$e2:$d2]"
+	START="\${LSB_JOBINDEX}"
+	END="\$[\${LSB_JOBINDEX}+(\${LSB_JOBINDEX}<$s2?$d1m1:$d2m1)]"
+fi
+
+#(no quotes around $template, so that this will read from stdin if none given)
+
+cat $template | sed '/^#BSUB[ \t]*-J/s|$|'"$array"'|' | sed '/^#BSUB/s|$START|%I|g' | sed 's|$START|'$START'|g' | sed 's|$END|'"$END"'|g' | sed 's|$WIDTH|'"$width"'|g' | "$target"
