@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -e
+
+helpstr="\
+NAME
+    whos_hammering - show users with the most jobs using a given filesystem server
+
+SYNOPSIS
+    whos_hammering SERVERNAME...
+
+DESCRIPTION
+    For each given SERVERNAME, this prints the users running the most jobs 
+    where the current working directory, command line, and/or -o file includes 
+    a path on a filesystem exported by the given server.  This may give a hint 
+    as to who's hammering a filesystem.  A big number is only a problem if the 
+    jobs are actually doing i/o; plus the job may be using the filesystem 
+    unbeknownst to LSF.  If a NFS server has nfswatch installed, that's a much 
+    better sleuthing tool (hit a to see authenticator counts).
+
+OPTIONS
+    -h, --help
+        Print this help.
+
+REQUIREMENTS
+    bjobs2
+
+AUTHOR
+    John Brunelle
+"
+
+if getopt -q -l help -o h -- "$@" | egrep -q '^ -h|^ --help'; then echo -n "$helpstr"; exit; fi
+
+set -u
+
+if ! which bjobs2 &>/dev/null; then
+	echo "*** ERROR *** this script needs bjobs2 from odyssey.git" >&2
+	exit 1
+fi
+
+
+#---
+
+echo "Users with the most running jobs where cwd, -o, -e, or the job command specify something on a filesystem served by the given host, and the number of jobs:"
+echo
+
+for server in "$@"; do
+	echo "$server"...
+	bjobs2 -u all -r -o 'user o cwd cmdflat' | grep -f <(mount | grep "$server" | awk '{print $3}"/"') | awk '{print $1}' | sort | uniq -c | sort -nr | head
+done
