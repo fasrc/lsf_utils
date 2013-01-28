@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+
+helpstr="\
+NAME
+    bjobsc/bhistc - caching versions of LSF's bjobs and bhist
+
+SYNOPSIS
+    bjobsc [OPTIONS --] [BJOBS_OPTIONS_AND_ARGS]
+    bhistc [OPTIONS --] [BHIST_OPTIONS_AND_ARGS]
+
+DESCRIPTION
+    This same script is used for caching of both bjobs and bhist.  Symlink to 
+    it as anything with \`bjobs' or \`bhist' in the named, respectively, 
+    including simply \`bjobs' or \`bhist' (in that case put its parent 
+    directory in the PATH before LSF's bin directory).
+
+    If this is called with BJOBS_OPTIONS_AND_ARGS/BHIST_OPTIONS_AND_ARGS being 
+    one JOBID, it tries to construct a response from previously saved output of 
+    \`bjobs/bhist -a'.  If the cache is not present or has expired this attempts
+    to build it (unless --do-not-update-cache is specified).  Otherwise, or if 
+    anything else goes wrong, this falls back to running the actual bjobs/bhist 
+    command.  Furthermore, if the given JOBID is greater than any jobid in the 
+    cache, it falls back to running the actual command.
+
+    When producing an answer from cache, this attempts to properly reproduce 
+    stdout, stderr, and exit status so that it's indistinguishable from 
+    non-cached output.  Furthermore, since this script execs the actual command 
+    in any cases it can't handle, it's meant as a drop-in replacement for the 
+    bjobs or bhist command -- no command line changes required.
+
+    Note that both this command and bjobs/bhist may require options.  All 
+    options to this command must be specified first and end with the special 
+    separator --.  Note that getopt is *not* used to parse this command's 
+    options (and, e.g. --long-opt=OPTARG will not work).
+
+	
+	See also:
+
+        https://software.rc.fas.harvard.edu/jab/atlas/bcache/
+
+    This is the case study that prompted the development of this, and at the 
+    bottom there are plots showing the increased performance.
+
+OPTIONS
+    --cache-dir DIRECTORY
+        Directory to store cache (and lock, temporary, etc.) files.  Default is 
+        /tmp.
+    
+    --lifetime SECONDS
+        Cache validity lifetime.  Default is 600 (as of writing).
+    
+    --do-not-update-cache
+        If the cache has expired, attempt to refresh it.  Default is to not do 
+        this.  This uses locks and temp files to make this go as smoothly as 
+        possible in an environment when this is called heavily and 
+        asynchronously.
+
+    --extra-args ARGS
+        Extra args to add to the bjobs or bhist command when making the cache.  
+        E.g., \`-u USERNAME' if this will be used for anybody but the calling 
+        user.  These are not added when caching fails and the given command is 
+        run as-is.
+    
+    --debug
+        Print extra diagnostic messages to stderr.
+
+    -h, --help
+        Print this help.
+
+AUTHOR
+    John Brunelle <john_brunelle@harvard.edu>
+    Harvard FAS Research Computing
+"
+
+#testing:
+#	for cmd in bjobsc bhistc:
+#		cmd=bjobsc|bhistc
+#		jobid=SOME_RUNNING_JOB_ID
+#
+#		fall back
+#			./$cmd --debug --lifetime 1 --do-not-update-cache $jobid
+#		create/update cache, us it
+#			./$cmd --debug --lifetime 1 $jobid
+#		use cache as-is
+#			./$cmd --debug $jobid
+#		like normal
+#			./$cmd $jobid
+#
+#		these should fall back:
+#			./$cmd --debug -l $jobid
+#			./$cmd -l $jobid
+#
+#		trigger a cache update since jobid is newer than any existing
+#			./$cmd --debug --lifetime 999999999 999999999
+#		this one will trigger two cache updates
+#			./$cmd --debug --lifetime 1 999999999
+
+#defaults
+cache_dir='/tmp'
+lifetime=600
+maintain_cache=true
+extra_args=''
+debug=false
+
+#these have no command line option yet and are only used internally
+force_update=false
+
+#(don't use getopt -- don't want to eat up options meant for bjobs/bhist)
+while [ ! -z "$1" ]; do
+	case "$1" in
+		--cache-dir)
+			cache_dir="$2"
+			shift
+			;;
+		--lifetime)
+			lifetime="$2"
+			shift
+			;;
+		--do-not-update-cache)
+			maintain_cache=false
+			;;
+		--extra-args)
+			extra_args="$2"
+			shift
+			;;
+
+		--debug)
+			debug=true
+			;;
+		-h | --help)
+			echo -n "$helpstr"
+			exit 0
+			;;
+		--) 
+			shift
+			break
+			;;
+		*)
+			break
+			;;
+	esac
+	shift
+done
+
+set -u
+
+case "$(basename "$0")" in
+	*bjobs*)
+		cmd=bjobs
+		;;
+	*bhist*)
+		cmd=bhist
+		;;
+	*)
+		echo "*** ERROR *** make a symlink to this script with the word bjobs or bhist in the name" >&2
+		exit 1
+esac
+username=${USER:-}
+test -z "$username" && username="$(whoami)"  #grid_manager_monitor_agent processes don't have $USER defined (still trying not to spawn this subprocess if not necessary)
+cachefile="$cache_dir/bcache.$username.$cmd".cache
+lockfile="$cache_dir/bcache.$username.$cmd".cache.lock
+
+
+#---
+
+function log () {
+	jobidtmp="${jobid:-n/a}"
+	msg="pid $$: $cmd $jobidtmp: ""$@"
+	$debug && echo "$(date): $msg" >&2
+	logger -p user.debug -t bcache "$msg"
+	return 0
+}
+
+function expired () {
+	#returns status 0 or 1 if cache has expired or not, respectively
+	test -r "$cachefile" || return 0
+	test $(($(date +%s) - $(stat -c%Y "$cachefile"))) -lt "$lifetime" || return 0
+	return 1
+}
+
+function validateORupdateORfallback () {
+	#args: jobid
+	#either return after guaranteeing the cache is up to date (possibly after updating it), or fall back
+	jobid="$1"
+	if expired || $force_update; then
+		$force_update && log "cache update forced" || log "cache has expired"
+		if "$maintain_cache"; then
+			log "attempting to update cache:"\
+			flock -x -w 0 "$lockfile" bash -c "$LSF_BINDIR/$cmd"' -a '"$extra_args"' > '"$cachefile"'.tmp && mv '"$cachefile"'.tmp '"$cachefile"
+			flock -x -w 0 "$lockfile" bash -c "$LSF_BINDIR/$cmd"' -a '"$extra_args"' > '"$cachefile"'.tmp && mv '"$cachefile"'.tmp '"$cachefile"
+			if [ $? -ne 0 ]; then
+				log "cache update failed (probably it's locked), falling back"
+				exec "$LSF_BINDIR/$cmd" "$jobid"
+			fi
+		else
+			log "not our responsiblity to update the cache, falling back"
+			exec "$LSF_BINDIR/$cmd" "$jobid"
+		fi
+	fi
+}
+
+function reportfromcache () {
+	#args: jobid
+	#writes output to stdout and *exits* with status 0, if job is in cache
+	#writes nothing and *returns* 1, if job is not in the cache
+	#does not try to validate or update the cache
+	#falls back if there is an unexpected error trying to read the cache
+
+	jobid="$1"
+	
+	#e.g. bjobs
+	#	JOBID      USER    STAT  QUEUE      FROM_HOST   EXEC_HOST   JOB_NAME   SUBMIT_TIME
+	#	13622473   usatlas EXIT  ATLAS_Prod heroatlas   atlas5512   *er2-lsf"  Dec  7 14:30
+	#e.g. bhist (including that trailing blank line)
+	#	Summary of time in seconds spent in various states:
+	#	JOBID      USER    JOB_NAME  PEND    PSUSP   RUN     USUSP   SSUSP   UNKWN   TOTAL
+	#	13622473   usatlas *2-lsf"   7       0       4426    0       0       0       4433      
+	#
+	
+	headerlines=0
+	totallines=0
+	case "$cmd" in
+		bjobs)
+			headerlines=1
+			totallines=2
+			;;
+		bhist)
+			headerlines=2
+			totallines=4
+			;;
+	esac
+
+	output="$(cat "$cachefile" 2>/dev/null | awk 'NR<='"$headerlines"' || $1 ~ /\<'"$jobid"'\>/ {print $0}')"
+	#extra check to make sure reading the cache worked
+	if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+		log "couldn't read the cache, falling back"
+		exec "$LSF_BINDIR/$cmd" "$jobid"
+	fi
+	#add that trailing blank line to bhist output
+	test "$cmd" = bhist && output="$output"$'\n'
+	
+	#if a job was found (i.e. output equals headers plus the job info), print it out and we're done
+	if [ "$(echo "$output" | wc -l)" -eq "$totallines" ]; then
+		log "serving answer from cache (hit)"
+		echo "$output"
+		return 0
+	fi
+	
+	#no job was found
+	return 1
+}
+	
+
+if [ "$#" -eq 1 ] && [ "$1" -eq "$1" ] 2>/dev/null; then
+	jobid="$1"
+
+	validateORupdateORfallback "$jobid"
+
+	reportfromcache "$jobid"
+	if [ $? -eq 0 ]; then
+		exit 0
+	else
+		#job was not found in the cache; see if that's because it's newer, and fall back if so
+		maxcachedid="$(cat "$cachefile" | awk '$1 ~ /[[:digit:]]/ {print $1}' | sort -n | tail -n 1)"
+		if [ "$maxcachedid" -eq "$maxcachedid" ] 2>/dev/null && [ "$jobid" -gt "$maxcachedid" ]; then
+			log "given jobid [$jobid] greater than maximum cached id [$maxcachedid]"
+			force_update=true
+			validateORupdateORfallback "$jobid"
+			reportfromcache "$jobid"
+			if [ $? -eq 0 ]; then
+				exit 0
+			fi
+		fi
+
+		#job was not found and it's not just because the cache is old; reproduce the normal behavior
+		log "serving answer from cache (miss)"
+		case "$cmd" in
+			bjobs)
+				#the real bjobs prints a message on stderr and exits with status 0 (very unlike bhist)
+				echo "Job <$jobid> is not found" >&2
+				exit 0
+				;;
+			bhist)
+				#the real bhist prints a message on stdout and exits with (invalid) status 255 (very unlike bjobs)
+				echo "No matching job found"
+				exit 255
+				;;
+		esac
+	fi
+else
+	log "cannot handle args [$@]"
+	log "falling back"
+	exec "$LSF_BINDIR/$cmd" "$@"
+fi
