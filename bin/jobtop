@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+
+helpstr="\
+NAME
+    jobtop - show the output of top on hosts used by batch jobs
+
+SYNOPSIS
+    jobtop [BJOBS_OPTIONS]
+
+DESCRIPTION
+    For each host involved in the jobs matched by bjobs called with the given 
+    options, print relevant output from top.  Only processes owned by the 
+    owner(s) of the jobs are shown.  Common (usually non-interesting) parent 
+    LSF and MPI processes (res, orted, etc.) are omitted.  Each output from top 
+    is trimmed to 20 lines.  This also prints the total number of cores 
+    allocated to the given jobs on that host, and their job IDs.
+
+    This runs top over ssh.  Since nodes are usually busy running the jobs, 
+    individual ssh commands can take a while.  Thus, this runs them in parallel 
+    (within a sliding window).  That also means there can be a long delay 
+    before seeing any output, while all the output is compiled.
+
+OPTIONS
+    -h, --help
+        Show this help.
+    
+    All other options/arguments are passed as-is to bjobs (actually, bjobs2, 
+    which accepts the most common bjobs arguments; see \`bjobs2 --help' for 
+    details).
+
+REQUIREMENTS
+    bjobs2
+
+BUGS
+    This lists all processes owned by the user, but it should be able to use 
+    bjobs2's pgid and have ps only look for those.
+
+AUTHOR
+    John Brunelle
+    Harvard University FAS Research Computing
+    rchelp@fas.harvard.edu
+"
+
+getopt -q -l help -o h -- "$@" | egrep -q '^ -h|^ --help' && echo -n "$helpstr" && exit
+
+#trim top output to this number of lines (including the header) (an extra '...' line is added if the output is trimmed)
+NLINES=20
+
+#run this number off ssh commands in parallel (note that all text munging is done locally and also affected by this parallelism)
+FANOUT=12
+
+#base path/filename for temporary files
+TMPFILEBASE=/tmp/"$(basename "$0")".$$
+
+#create a regex of the username(s) to grep the the output of top for
+#take as-is, if -u is specified
+user="$(getopt -q -o u: -- "$@" | egrep '^ -u' | awk '{print $2}' | grep -Po "(?<=').*(?=')")"
+#elif jobids are specified, or -u all, compute the set of users
+if ( [ -z "$user" ] && echo "${!#}" | grep -Pq '\b\d+\b' || [ "$user" = all ] ); then
+	user="$(bjobs2 -o user -r "$@" | tr '\n' '|' | sed 's/|$//')"
+fi
+#else use the current user
+[ -z "$user" ] && user="$USER"
+##else, give up and grep for anything
+#[ -z "$user" ] && user="."
+
+#delete all temporary files when we're done
+trap "{ rm -f \"$TMPFILEBASE\"* ; }" EXIT
+
+#see if stdout is a terminal
+[[ $(stat -c%F $(readlink -f /proc/$$/fd/1)) == character* ]] && STDOUT_IS_TERM=true || STDOUT_IS_TERM=false
+
+set -e
+
+#---
+
+#print a warning that this could take a while (only if stdout is a terminal)
+$STDOUT_IS_TERM && echo -en '  Running commands in parallel in the background, please wait for report...\r'
+
+#get the total number of cores allocated by these jobs on each host
+bjobs2 -o nXhosts -r "$@" | awk -F'*' '{ncores[$2]+=$1} END {for (host in ncores) print host" "ncores[host]}' > "$TMPFILEBASE.ncores"
+
+#runs the ssh commands (and text munging) in parallel, storing out put in temporary files
+bjobs2 -o hosts -r "$@" | sort | uniq | xargs -I% -P"$FANOUT" bash -c 'ssh -o PreferredAuthentications=publickey '%' top -bn1 | tail -n +7 | grep -P '\''^ *PID|'"$user"\'' | grep -Pv '\''res|orted|TaskStarter|pam|mpirun|openmpi_wrapper|\d+\.\d+ *$'\'' | head -n '"$NLINES"' | sed "'"$NLINES"' a ..."  > '"$TMPFILEBASE"'.topout.%'
+
+#erase that above warning, if applicable
+$STDOUT_IS_TERM && echo -en '                                                                           \r'
+
+shopt -s nullglob
+for f in "$TMPFILEBASE".topout.*; do
+	host=$(echo "$f" | awk -F. '{print $NF}')
+	cores=$(cat "$TMPFILEBASE.ncores" | awk /$host/' {print $2}')
+	test -z "$cores" && cores='?'  #(things may become inconsistent during the finite time that this script runs)
+	echo "$host, $cores core(s) allocated, jobs: $(bjobs2 -r "$@" -m $host -o jobid | tr '\n' ' ')"
+	cat "$f"
+	echo
+done

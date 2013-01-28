@@ -1,0 +1,684 @@
+#!/usr/bin/env python
+
+"""\
+NAME
+    bjobs2 - LSF's bjobs, plus additional output formatting and acct parsing
+
+SYNOPSIS
+    bjobs2 [-o FORMAT] [BJOBS_OPTIONS]
+
+DESCRIPTION
+    Select jobs using bjobs-like options and print their parameters, possibly 
+    according to a specified format.  Keywords in the format string will be 
+    replaced by the job-specific values.  Use \\n and \\t for newlines and 
+    tabs, respectively.  All other words/characters will be left as is.
+
+    Output format keywords:
+        jobid
+            job ID, including array index (in brackets) if applicable
+        state
+            job state
+        queue
+            queue
+        user
+            username
+        group
+            groupname
+        host
+            same as hosts, but prints a warning when there are multiple
+        hosts
+            multi-line list of unique hosts
+        hostsflat
+            like hosts but separated by `,' instead of newlines
+        nXhosts
+            like hosts by includes n* prefix where n is the number of cores
+        nXhostsflat
+            like hostsflat but includes n* prefix where n is the number of cores
+        cmd
+            the command/script being run (multi-line)
+        cmdflat
+            the command/script being run (as one line)
+        cwd
+            job's current working directory
+        J
+            job name
+        i
+            input file, absolute path
+        irel
+            input file, as specified at submission
+        o
+            stdout file, absolute path
+        orel
+            stdout file, as specified at submission
+        e
+            stderr file, absolute path
+        erel
+            stderr file, as specified at submission
+        n
+            number of processors
+        R
+            resource requirement(s)
+        submitTime
+            the time the job was submitted (local time format)
+        submitTime_s
+            the time the job was submitted (seconds since the epoch)
+        startTime
+            the time the job was started (local time format)
+        startTime_s
+            the time the job was started (seconds since the epoch)
+        endTime
+            the time the job ended (local time format)
+        endTime_s
+            the time the job ended (seconds since the epoch)
+        
+        pgid
+            process group of the job (also the process id of the parent res 
+            process)
+        
+        cpuTime
+            total CPU time used by the job in (seconds, floating point)
+        wallTime
+            total wall time used by the job (does not include pendTime) (seconds, int)
+        nXwallTime
+            wallTime multipled by the number of cores (seconds, int)
+        pendTime
+            total time spent pending (seconds, int)
+        totalTime
+            total time from submission to finish (seconds, int)
+        maxMem
+            maximum resident memory used by the job (KB)
+        maxSwap
+            maximum memory used by the job, including swap (KB)
+
+    Supported BJOBS_OPTIONS for selecting jobs:
+        -u USERNAME|GROUPNAME
+        -q QUEUENAME
+        -m HOSTNAME|HOSTGROUP
+        -a
+        -d
+        -p
+        -s
+        -r
+
+        Unlike with bjobs, the options -u, -q, and -m can be specified multiple 
+        times and are additive; e.g. use -q QUEUE1 -q QUEUE2 to look for jobs 
+        in either of those two queues.  Alternatively, multiple option 
+        arguments can be given at once by separating them by whitespace; e.g. 
+        -m 'HOST1 HOST2' works, as it does with bjobs.
+
+        When multiple different options are specified, the intersection is 
+        taken, e.g. `-q QUEUE -u USER' will only return jobs owned by that user 
+        in that queue, not all jobs satisfying either condition.
+
+        Unlike with bjobs, when using -u, if the given argument does not 
+        correspond to a user, this will treat it as a unix group name and 
+        select all users whose primary group is that.
+
+    Other options:
+        --acct
+            Search lsb.acct files (like the bhist command does) instead of 
+            current mbatchd data (like the bjobs command does).
+
+        --acct-dir
+            Directory where lsb.acct files reside.  The default is specific to 
+            the Odyssey cluster.
+
+        --acct-start N
+            In --acct mode, start at the lsb.acct.N file back.  The default is 
+            to go as far back as the files go.  Use --acct-list to see possible 
+            values of N and details of the files.
+
+        --acct-end N
+            In --acct mode, end processing at the Nth lsb.acct file back.  N=0 
+            is the special case of the (non-rotated) lsb.acct and is the 
+            default.  Use --acct-list to see possible values of N and details 
+            of the files.
+
+        --acct-list
+            List all the lsb.acct* files in order and the times of the first 
+            and last events in them, and exit without doing anything else.
+
+        --users-list
+            List all the users that match the given -u USERNAME|GROUPNAME (only 
+            useful when giving a GROUPNAME).
+
+        --hosts-list
+            List all the users that match the given -m HOSTNAME|HOSTGROUP (only 
+            useful when giving a HOSTGROUP).
+
+        -h, --help
+            Show this help.
+
+REQUIREMENTS
+    custom python pylsf module
+
+KNOWN BUGS / DEPARTURES FROM bjobs
+    There is no ZOMBIE state as with bjobs.  ZOMBIE jobs are reported as EXIT 
+    along with other failures.
+
+    State UNKNOWN is reported as 65536.
+
+AUTHOR
+    John Brunelle
+    Harvard University FAS DoS Research Computing
+    rchelp@fas.harvard.edu
+"""
+
+#/n/sw/src/pylsf-0.0.1-patched/pylsf/pylsf.pyx
+#	go to `def lsb_readjobinfo' to see object fields
+#	run /n/sw/src/pylsf-0.0.1-patched/rebuild.sh after making any changes
+#/lsf/7.0/include/lsf/lsbatch.h (and lsf.h)
+
+
+import sys, os, getpass, pwd, grp, time, re, itertools, getopt, glob, subprocess, warnings, errno
+
+
+#---stuff from /lsf/7.0/include/lsf/lsbatch.h (used in option parsing)
+
+#pylsf takes empty string where C NULL would be used (meaning all queues, all hosts, etc.)
+#but empty string / NULL for users means just you, not everybody
+ALL_QUEUES      = ''
+ALL_HOSTS       = ''
+ALL_USERS       = 'all'
+
+ALL_JOB         = 0x0001
+DONE_JOB        = 0x0002
+PEND_JOB        = 0x0004
+SUSP_JOB        = 0x0008
+RUN_JOB         = 0x0040
+
+_statestrs = {
+	0x01  : 'PEND'  ,  #define JOB_STAT_PEND      0x01    job is pending
+	0x02  : 'PSUSP' ,  #define JOB_STAT_PSUSP     0x02    job is held
+	0x04  : 'RUN'   ,  #define JOB_STAT_RUN       0x04    job is running
+	0x08  : 'SSUSP' ,  #define JOB_STAT_SSUSP     0x08    job is suspended by LSF Batch system
+	0x10  : 'USUSP' ,  #define JOB_STAT_USUSP     0x10    job is suspended by user
+	0x20  : 'EXIT'  ,  #define JOB_STAT_EXIT      0x20    job exited
+	0x40  : 'DONE'  ,  #define JOB_STAT_DONE      0x40    job is completed successfully
+	0xc0  : 'DONE'  ,  #I can't find this anywhere in lsbatch.h or pylsf.pyx, but Done jobs are coming back with it
+	0x80  : 'PDONE' ,  #define JOB_STAT_PDONE     0x80    post job process done successfully
+	0x100 : 'PERROR',  #define JOB_STAT_PERROR    0x100   post job process error
+	0x200 : 'WAIT'  ,  #define JOB_STAT_WAIT      0x200   chunk job waiting its execution turn
+	0x1000: 'UNKWN' ,  #define JOB_STAT_UNKWN     0x1000  unknown status
+	0x10000: 'UNKWN' ,  #this is what I see coming out for UNKWN; JAB 2011-10-31
+}
+
+
+#--- parse options
+
+user_given = False  #whether or not a -u was given
+
+#defaults; empty set means *all*
+users    = set()  #the default is actually just the current user, if no other ones are given; this is handled below
+queues   = set()
+hosts    = set()
+options  = 0
+output   = 'jobid user state queue'
+
+acct       = False  #boolean of whether or not to use lsb.acct files (a-la bhist) or just the recent mbatchd data (a-la bjobs)
+acct_list  = False  #boolean of whehter or not to just like lsb.acct file details and exit
+acct_dir   = '/lsf/work/lsf-odyssey/logdir'
+acct_start = None
+acct_end   = None
+
+users_list = False
+hosts_list = False
+
+debug = False
+
+#get options
+try:
+	opts, jobids = getopt.gnu_getopt(sys.argv[1:], 'o:u:q:m:adpsrh', ['acct','acct-dir=','acct-start=','acct-end=','acct-list','users-list','hosts-list','debug','help'])  #jobids remain strings: the api can take strings, and this uses 'jobid[index]' format internally
+except getopt.GetoptError, e:
+	sys.stderr.write("*** ERROR *** %s\n" % e)
+	sys.exit(1)
+for opt, optarg in opts:
+	if   opt=='-u':
+		if not (user_given and len(users)==0):  #let -u all override these later specific -u
+			user_given = True
+			if optarg=='all':
+				users = set()
+			else:
+				for x in optarg.split(): users.add(x)
+	elif opt=='-q':
+		if optarg=='all':
+			queues = set()
+		else:
+			for x in optarg.split(): queues.add(x)
+	elif opt=='-m':
+		if optarg=='all':
+			hosts = set()
+		else:
+			for x in optarg.split(): hosts.add(x)
+	elif opt=='-a': options |= ALL_JOB
+	elif opt=='-d': options |= DONE_JOB
+	elif opt=='-p': options |= PEND_JOB
+	elif opt=='-s': options |= SUSP_JOB
+	elif opt=='-r': options |= RUN_JOB
+	elif opt=='-o':
+		output = optarg
+	elif opt=='--acct':
+		acct = True
+	elif opt=='--acct-dir':
+		acct_dir = optarg
+	elif opt=='--acct-start':
+		try:
+			acct_start = int(optarg)
+		except ValueError:
+			sys.stderr.write("*** ERROR *** invalid integer [%s] for --acct-start\n" % optarg)
+			sys.exit(1)
+	elif opt=='--acct-end':
+		try:
+			acct_end = int(optarg)
+		except ValueError:
+			sys.stderr.write("*** ERROR *** invalid integer [%s] for --acct-end\n" % optarg)
+			sys.exit(1)
+	elif opt=='--acct-list':
+		acct_list = True
+	elif opt=='--users-list':
+		users_list = True
+	elif opt=='--hosts-list':
+		hosts_list = True
+	elif opt=='--debug':
+		debug = True
+	elif opt in ('-h', '--help'):
+		print __doc__
+		sys.exit(0)
+
+
+#--- pylsf import
+
+#save from having to load devel/pylsf-0.0.1-patched
+if sys.version_info[:2]==(2, 4):
+	d = '/n/sw/pylsf-0.0.1-patched/lib64/python2.4/site-packages'
+	if os.path.exists(d): sys.path.append(d)
+elif sys.version_info[:2]==(2, 6):
+	d = '/n/sw/pylsf-0.0.1-patched_python-2.6.2/lib/python2.6/site-packages'
+	if os.path.exists(d): sys.path.append(d)
+
+warnings.simplefilter("ignore")
+import pylsf  #in 2.6, get DeprecationWarning: the sets module is deprecated
+warnings.resetwarnings()
+
+
+#--- misc other global constants/objects
+
+RE_CMDSEP   = re.compile('\s*;\s*')
+RE_WORDS    = re.compile(r'(\w+|\t|\n|.)')
+RE_JOBARRAY = re.compile(r'(\d+)\[(\d+)\]')
+
+
+#--- helpers
+
+def state2str(state):
+	try: return _statestrs[state]
+	except KeyError: return str(state)
+
+def jobid2str(jobid):
+	arrayindex = jobid >> 32
+	baseid     = jobid & 0x00000000ffffffff
+	if arrayindex==0: return str(baseid)
+	return '%s[%s]' % (baseid, arrayindex)
+
+def str2jobid(jobidstr):
+	m = RE_JOBARRAY.match(jobidstr)
+	try:
+		if m is not None:
+			baseid     = int(m.group(1))
+			arrayindex = int(m.group(2))
+			jobid = arrayindex << 32
+			jobid += baseid
+			return jobid
+		else:
+			return int(jobidstr)
+	except ValueError:
+		raise ValueError("invalid jobid [%s]" % jobidstr)
+
+def hostsstr(dtype, d, nX, sep, warnMultiple=False):
+	#construct a hosts string from the mbd job data
+	#dtype must be 'mbd' or 'jf'
+	#nX : true false to do n*host format
+	#sep: string to join them with 
+	if dtype=='mbd':
+		if nX:
+			l = ['%s*%s' % (x[1],x[0]) for x in d[17]]
+		else:
+			l = [x[0] for x in d[17]]
+	elif dtype=='jf':
+		if nX:
+			l = ['%s*%s' % (len(list(v)), k) for k, v in itertools.groupby(sorted(d[27]))]
+		else:
+			l = [k for k, v in itertools.groupby(sorted(d[27]))]
+	if len(l)==0: return 'N/A'
+	if warnMultiple and len(l)>1: sys.stderr.write("WARNING: `host' is more than one host (use hosts, hostsflat, nXhosts, nXhostsflat, etc. to avoid this warning)\n")
+	return sep.join(l)
+
+
+#---how to extract job parameters from the objects returned by API calls
+
+#current job info from mbatchd and archived event info from files are in a completely different format, hence these two dicts
+#give each of them the exact same keys, just make them return 'N/A' if not applicable
+
+#for the output from lsb_openjobinfo
+mbd_dextractors = {
+	'jobid'         : lambda d: jobid2str(d[0]),
+	'state'         : lambda d: state2str(d[2]),
+	'queue'         : lambda d: d[19][1],
+	'user'          : lambda d: d[1],
+	'group'         : lambda d: getPrimaryGroup(d[1]),
+	'host'          : lambda d: hostsstr('mbd', d, nX=False, sep=','  , warnMultiple=True),
+	'hosts'         : lambda d: hostsstr('mbd', d, nX=False, sep='\n'),
+	'hostsflat'     : lambda d: hostsstr('mbd', d, nX=False, sep=',' ),
+	'nXhosts'       : lambda d: hostsstr('mbd', d, nX=True , sep='\n'),
+	'nXhostsflat'   : lambda d: hostsstr('mbd', d, nX=True , sep=',' ),
+	'cmd'           : lambda d: RE_CMDSEP.sub('\n', d[19][13]),
+	'cmdflat'       : lambda d: d[19][13],
+	'cwd'           : lambda d: rcwdNuser2acwd(d[14], d[1]),
+	'J'             : lambda d: d[19][0],
+	'i'             : lambda d: abspath(rcwdNuser2acwd(d[14], d[1]), d[19][10]),
+	'irel'          : lambda d: d[19][10],
+	'o'             : lambda d: abspath(rcwdNuser2acwd(d[14], d[1]), d[19][11]),
+	'orel'          : lambda d: d[19][11],
+	'e'             : lambda d: abspath(rcwdNuser2acwd(d[14], d[1]), d[19][12]),
+	'erel'          : lambda d: d[19][12],
+	'n'             : lambda d: d[19][5],
+	'R'             : lambda d: d[19][3],
+	'submitTime'    : lambda d:   ctime(d[4]),
+	'submitTime_s'  : lambda d: zero2NA(d[4]),
+	'startTime'     : lambda d:   ctime(d[6]),
+	'startTime_s'   : lambda d: zero2NA(d[6]),
+	'endTime'       : lambda d:   ctime(d[8]),
+	'endTime_s'     : lambda d: zero2NA(d[8]),
+	#mbd only       
+	'pgid'          : lambda d: d[3],
+	#jf only        
+	'cpuTime'       : lambda d: 'N/A',
+	'wallTime'      : lambda d: 'N/A',
+	'nXwallTime'    : lambda d: 'N/A',
+	'pendTime'      : lambda d: 'N/A',
+	'totalTime'     : lambda d: 'N/A',
+	'maxMem'        : lambda d: 'N/A',
+	'maxSwap'       : lambda d: 'N/A',
+}
+
+#for the output from lsb_geteventrec.read when it's a JOB_FINISH event
+jf_dextractors = {
+	'jobid'         : lambda d: jobid2str(d[4]),
+	'state'         : lambda d: state2str(d[9]),
+	'queue'         : lambda d: d[15],
+	'user'          : lambda d: d[6],
+	'group'         : lambda d: getPrimaryGroup(d[6]),
+	'host'          : lambda d: hostsstr('jf', d, nX=False, sep=','  , warnMultiple=True),
+	'hosts'         : lambda d: hostsstr('jf', d, nX=False, sep='\n'),
+	'hostsflat'     : lambda d: hostsstr('jf', d, nX=False, sep=',' ),
+	'nXhosts'       : lambda d: hostsstr('jf', d, nX=True , sep='\n'),
+	'nXhostsflat'   : lambda d: hostsstr('jf', d, nX=True , sep=',' ),
+	'cmd'           : lambda d: RE_CMDSEP.sub('\n', d[30]),
+	'cmdflat'       : lambda d: d[30],
+	'cwd'           : lambda d: rcwdNuser2acwd(d[18], d[6]),
+	'J'             : lambda d: d[29],
+	'i'             : lambda d: abspath(rcwdNuser2acwd(d[18], d[6]), d[19]),
+	'irel'          : lambda d: d[19],
+	'o'             : lambda d: abspath(rcwdNuser2acwd(d[18], d[6]), d[20]),
+	'orel'          : lambda d: d[20],
+	'e'             : lambda d: abspath(rcwdNuser2acwd(d[18], d[6]), d[21]),
+	'erel'          : lambda d: d[21],
+	'n'             : lambda d: d[8],
+	'R'             : lambda d: d[16],
+	'submitTime'    : lambda d:   ctime(d[10]),
+	'submitTime_s'  : lambda d: zero2NA(d[10]),
+	'startTime'     : lambda d:   ctime(d[13]),
+	'startTime_s'   : lambda d: zero2NA(d[13]),
+	'endTime'       : lambda d:   ctime(d[14]),
+	'endTime_s'     : lambda d: zero2NA(d[14]),
+	#mbd only       
+	'pgid'          : lambda d: 'N/A',
+	#jf only        
+	'cpuTime'       : lambda d: d[28],
+	'wallTime'      : lambda d: wallTime(d[10], d[13], d[14]),
+	'nXwallTime'    : lambda d: d[8]*wallTime(d[10], d[13], d[14]),
+	'pendTime'      : lambda d: pendTime(d[10], d[13], d[14]),
+	'totalTime'     : lambda d: d[14]-d[10],
+	'maxMem'        : lambda d: d[40],
+	'maxSwap'       : lambda d: d[41],
+}                   
+ 
+
+#---helpers
+
+_homes = {}  #cache the answers
+def getHomeDir(user):
+	try:
+		return _homes[user]
+	except KeyError:
+		h = os.path.expanduser('~'+user)
+		_homes[user] = h
+		return h
+
+def getPrimaryGroup(user):
+	import pwd, grp
+	return grp.getgrgid(pwd.getpwnam(user).pw_gid).gr_name
+
+def rcwdNuser2acwd(cwd, user):
+	#relative current working directory + username -> absolute current working directory
+	if not os.path.isabs(cwd): return os.path.join(getHomeDir(user), cwd)
+	return cwd
+
+def abspath(cwd, path):
+	#assumes cwd is already absolute
+	if path=='': return ''
+	if not os.path.isabs(path): return os.path.join(cwd, path)
+	return path
+
+def zero2NA(x):
+	if x==0: return 'N/A'
+	return x
+
+def ctime(sec):
+	if sec==0: return 'N/A'
+	try: return(time.ctime(sec))
+	except (TypeError, ValueError): return str(sec)
+
+def pendTime(submitTime, startTime, endTime):
+	if startTime==0: return endTime - submitTime
+	return startTime - submitTime
+
+def wallTime(submitTime, startTime, endTime):
+	if startTime==0: return 0
+	return endTime - startTime
+
+def printdata(d, dextractors):
+	for f in dextractors:
+		if type(f)==str: x = f
+		else: x = str(f(d))
+		sys.stdout.write(x)
+	sys.stdout.write('\n')
+
+
+if __name__=='__main__':
+	try:
+		if pylsf.lsb_init(sys.argv[0])!=0:
+			raise Exception("unable to initialize LSF")
+		
+		#only handle lsb.acct files if necessary
+		if acct_start is not None or acct_end is not None or acct_list: acct = True
+		if acct:
+			#get all the files
+			try:
+				acct_files = glob.glob(os.path.join(acct_dir, 'lsb.acct*'))
+			except Exception, e:
+				sys.stderr.write("*** ERROR *** unable to get list of lsb.acct files at [%s]: [%s]\n" % (acct_dir, str(e).strip()))
+				sys.exit(1)
+			if len(acct_files)==0:
+				sys.stderr.write("*** ERROR *** unable to get list of lsb.acct files at [%s]\n" % acct_dir)
+				sys.exit(1)
+			
+			#sort them by time
+			acct_filesNtimes = []
+			for path in acct_files:
+				try:
+					tstart = int(subprocess.Popen("head -n 1 '%s' | awk '{print $3}'" % path, shell=True, stdout=subprocess.PIPE).communicate()[0].strip())
+					tend   = int(subprocess.Popen("tail -n 1 '%s' | awk '{print $3}'" % path, shell=True, stdout=subprocess.PIPE).communicate()[0].strip())
+					acct_filesNtimes.append([path, tstart, tend])
+				except Exception, e:
+					sys.stderr.write("*** ERROR *** unable to read start and end event times for acct file [%s]: [%s]\n" % (path, e))
+					sys.exit(1)
+			acct_filesNtimes = sorted(acct_filesNtimes, key=lambda x: x[1])
+			l = len(acct_filesNtimes)
+			
+			#pare down to the subset requested, if applicable
+			if acct_end   is None: acct_end   = 0
+			if acct_start is None: acct_start = l
+			if acct_start<acct_end:
+				sys.stderr.write("*** ERROR *** --acct-start index [%s] less that --acct-end index [%s]\n" % (acct_start, acct_end))
+				sys.exit(1)
+			acct_filesNtimes = list(reversed(list(reversed(acct_filesNtimes))[acct_end:acct_start+1]))
+			acct_files = [ x[0] for x in acct_filesNtimes ]
+			
+			#list the files and exit, if requested
+			if acct_list:
+				def t2str(t): return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(t))
+				maxnumlen = len(str(len(acct_filesNtimes)))
+				maxpathlen = 0
+				for acct in acct_filesNtimes:
+					maxpathlen = max(maxpathlen, len(acct[0]))
+				n = len(acct_filesNtimes) - 1
+				first = True
+				for acct in acct_filesNtimes:
+					path = acct[0]
+					t1 = t2str(acct[1])
+					t2 = t2str(acct[2])
+					if first:
+						ln, lp, lt = maxnumlen, maxpathlen, len(t1)
+						header = "%-*s  %-*s  %-*s   %-*s" % (ln,'#', lp,'FILENAME', lt,'FIRST EVENT', lt,'LAST EVENT')
+						print header
+						#print '-'*len(header)
+						first = False
+					print "%-*s  %-*s  %-*s - %-*s" % (ln,n, lp,path, lt,t1, lt,t2)
+					n -= 1
+				sys.exit(0)
+
+		jobids = set(jobids)
+		
+		#make this work like bjobs -- automatically limit the query to the current user if no jobids or other -u was specified (the API will return nothing if ALL_USERS is not explicitly added)
+		if not user_given and len(jobids)==0:
+			users = set([getpass.getuser()])
+		
+		#some API calls can accept LSF host group args, some can't; lets just do all host stuff inside this script, consistently
+		hosts2 = set()
+		for host in hosts:
+			#host maybe an LSF host group or just a simple hostname (this is how bjobs work), but the hostgrpinfo call only returns something in the former case
+			l = pylsf.lsb_hostgrpinfo([host])
+			if len(l)>0:
+				for h in l[0][1].split(): hosts2.add(h)
+			else:
+				hosts2.add(host)
+		hosts = hosts2
+		if hosts_list:
+			for host in sorted(list(hosts)):
+				print host
+
+		#analgous to how bjobs handles -m, let -u specify unix groups in addition to specific users 
+		users2 = set()
+		for user in users:
+			try:
+				user = pwd.getpwnam(user).pw_name
+			except KeyError:
+				try:
+					gid = grp.getgrnam(user).gr_gid
+				except KeyError:
+					sys.stderr.write("*** ERROR *** no such user or unix group [%s]\n" % user)
+					sys.exit(1)
+				for u in pwd.getpwall():
+					if u.pw_gid==gid: users2.add(u.pw_name)
+			else:
+				users2.add(user)
+		users = users2
+		if users_list:
+			for user in sorted(list(users)):
+				print user
+
+		if users_list or hosts_list: sys.exit(0)
+		
+		#warn about differences in opt mode (don't bother warning about output cols that are guaranteed to be 'N/A')
+		if acct:
+			if options:
+				sys.stderr.write("WARNING: options like -a, -d, -p, -s, -r, etc. are ignored when using --acct\n")
+
+		#parse the output format string
+		dextractors = []
+		output = output.replace(r'\n', '\n')
+		output = output.replace(r'\t', '\t')
+		for match in RE_WORDS.finditer(output):
+			tok = match.group(0)
+			try:
+				if acct: dextractors.append( jf_dextractors[tok])
+				else   : dextractors.append(mbd_dextractors[tok])
+			except KeyError:
+				#dextractors.append(lambda d: tok)  #BAD! this will return the final value of tok, from the future, not what it is now
+				dextractors.append(tok)
+		
+		#loop through applicable jobs and print out their parameters
+		if acct:
+			do_progress = not os.isatty(sys.stdout.fileno()) and os.isatty(sys.stderr.fileno())
+			progress_interval = 60*60
+			progress_tlast = 0
+			progress_written = False
+			for f in acct_files:
+				f = os.path.join(acct_dir, f)
+				events = pylsf.lsb_geteventrec(f)
+				while True:
+					d = events.read()
+					if len(d)==0: break  #d is [] when done
+					if d[0]!=10: continue  #only interested in JOB_FINISH events
+					
+					if do_progress:
+						progress_tnow = jf_dextractors['endTime_s'](d)
+						if progress_tnow - progress_tlast >= progress_interval:
+							s = 'progress: %s' % jf_dextractors['endTime'](d)
+							sys.stderr.write('\r'*len(s) + s + ' ')
+							progress_written = True
+							progress_tlast = progress_tnow
+					
+					if len(queues)>0 and jf_dextractors['queue'](d) not in queues: continue
+					if len(users )>0 and jf_dextractors['user' ](d) not in users : continue
+					if len(jobids)>0 and jf_dextractors['jobid'](d) not in jobids: continue
+					if len(hosts )>0 and len(set(d[27]).intersection(hosts))==0: continue
+					
+					printdata(d, dextractors)
+			if progress_written:
+				sys.stderr.write('\n')
+
+		else:
+			#it's empirically faster to make the API call just once even if that involves manually paring down the set of jobs returned (instead of querying multiple times for exactly what we want)
+			#for each param, if len is zero we don't want to pare on it, and if len is 1 the api call will do all the necessary paring
+			pare = len(jobids)>1 or len(users)>1 or len(queues)>1 or len(hosts)>1
+
+			#if len is zero, convert to the special args for all jobs; if len > 1 we need to get all so that we can pare
+			if len(jobids)==1: jobidarg = str2jobid(iter(jobids).next())
+			else             : jobidarg = '0'
+			if len(users )==1: userarg  = iter(users).next()
+			else             : userarg = ALL_USERS
+			if len(queues)==1: queuearg = iter(queues).next()
+			else             : queuearg = ALL_QUEUES
+			if len(hosts )==1: hostarg = iter(hosts).next()
+			else             : hostarg = ALL_HOSTS
+			
+			njobs = pylsf.lsb_openjobinfo(jobid=jobidarg, user=userarg, queue=queuearg, host=hostarg, options=options)  #(the API can take LSF groups, but we've already converted them all to actual hosts above)
+			try:
+				for i in xrange(njobs):
+					d = pylsf.lsb_readjobinfo(i)
+					if pare:
+						if len(queues)>0 and mbd_dextractors['queue'](d) not in queues: continue
+						if len(users )>0 and mbd_dextractors['user' ](d)  not in users : continue
+						if len(jobids)>0 and mbd_dextractors['jobid'](d) not in jobids: continue
+						if len(hosts )>0 and len(set([x[0] for x in d[17]]).intersection(hosts))==0: continue
+					printdata(d, dextractors)
+			finally:
+				pylsf.lsb_closejobinfo()
+	except KeyboardInterrupt:
+		if debug: raise
+		pass
+	except IOError, e:
+		if hasattr(e, 'errno') and e.errno==errno.EPIPE: pass
+		else: raise

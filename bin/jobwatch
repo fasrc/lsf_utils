@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+set -e
+
+helptxt="\
+NAME
+    jobwatch - take action on jobs that match a given condition
+
+SYNOPSIS
+    jobwatch --match=BJOB2_ARGS [--action=SH_CODE --keepgoing=BJOB2_ARGS]
+
+DESCRIPTION
+    This runs the bjobs2 command with arguments given by --match.  For each job 
+    that matches, it calls the shell code given by --action with the 
+    corresponding job id as an argument.  If --keepgoing is specified, this 
+    script loops until bjobs2, called with the arguments specified by 
+    --keepgoing, no longer lists any jobs. 
+
+OPTIONS
+    -m, --match=CONDITION
+        take the given action on any jobs matching \`bjobs2 CONDITION'
+    
+    -a, --action=ACTION
+        arbitrary code to be run on each job matching the given condition (the 
+        code is run once for each job, with the job id passed as an argument)
+    
+    -k, --keepgoing=CONDITION
+        if given, continue in a loop until \`bjob2 CONDITION' no longer lists 
+        any jobs; CONDITION can be the special word \`y', to keep going 
+        indefinitely
+    
+    --mail=MAILARGS
+        mail the given address when actions are taken (MAILARGS are just passed 
+        verbatim to the mail program, but a -s is automatically constructed)
+    
+    -h, --help
+        print out this help and exit immediately
+
+REQUIREMENTS
+    bjobs2
+
+EXAMPLE
+    mail when a job with id MYJOBID starts running
+        jobwatch --match='-r MYJOBID' --mail=me@harvard.edu --keepgoing='-p MYJOBID'
+    the bswitch trick
+        jobwatch --match='-r -q short_parallel' --action='bswitch long_parallel' --keepgoing='-p -q short_parallel' --mail=me@harvard.edu
+
+AUTHOR
+    John Brunelle
+"
+
+match=''
+action=''
+keepgoing=''
+mail=''
+
+args=$(getopt -l help,match:,action:,keepgoing:,mail: -o hm:a:k: -- "$@")
+if [ $? -ne 0 ]; then
+	exit 65  #(getopt will have written the error message)
+fi
+eval set -- "$args"
+while [ ! -z "$1" ]; do
+	case "$1" in
+		-h | --help)
+			echo -n "$helptxt"
+			exit
+			;;
+
+		-m | --match)
+			match="$2"
+			shift
+			;;
+		-a | --action)
+			action="$2"
+			shift
+			;;
+		-k | --keepgoing)
+			keepgoing="$2"
+			shift
+			;;
+		--mail)
+			mail="$2"
+			shift
+			;;
+		
+		--) shift
+			break
+			;;
+	esac
+	shift
+done
+
+if [ -z "$match" ]; then
+	echo "*** ERROR *** -m/--match not given" >&2
+	exit 1
+fi
+
+set -u
+
+#---
+
+while true; do
+	bjobs2 -o jobid $match | while read jobid; do
+		echo "$(date): got a match for [$match]: $jobid"
+		
+		if [ -n "$action" ]; then
+			echo "$(date): taking action [$action $jobid]"
+			$action $jobid
+		fi
+
+		if [ -n "$mail" ]; then
+			msg="$(basename $0): found a job matching [$match] and took action [$action] at [$(date)]"
+			echo "$msg" | mail -s "$msg" "$mail"
+		fi
+	done
+	
+	if [ -n "$keepgoing" ]; then
+		if [ "$keepgoing" = y ] || [ "$keepgoing" = yes ] || [ -n "$(bjobs2 -o jobid $keepgoing)" ]; then
+			#echo "$(date): keeping going, because there are jobs matching [$keepgoing]"
+			sleep 30
+			continue
+		else
+			exit
+		fi
+	else
+		break
+	fi
+done

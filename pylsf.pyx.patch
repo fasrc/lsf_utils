@@ -1,0 +1,63 @@
+diff -rupN a/pylsf.pyx b/pylsf.pyx
+--- a/pylsf.pyx	2009-02-23 17:17:06.000000000 -0500
++++ b/pylsf.pyx	2010-07-22 19:39:59.000000000 -0400
+@@ -2539,7 +2539,7 @@ def lsb_readjobinfo(num_of_records):
+ 
+    return retval
+ 
+-def lsb_openjobinfo(user="all"):
++def lsb_openjobinfo(jobid=0, user="", queue="", host="", options=0):
+ 
+    """
+    lsb_openjobinfo : Accesses information about pending, running 
+@@ -2549,17 +2549,37 @@ def lsb_openjobinfo(user="all"):
+                      Next, use lsb_readjobinfo() to read job records.
+                      Close the connection using lsb_closejobinfo().
+ 
+-   Parameters      : String - User
++   Parameters      : Numeric - jobid,
++                     String  - User
+ 
+    Returns         : Value = num of records, -1 = unsuccessful
+    """
+ 
++   cdef long jobID
+    cdef char *User
++   cdef char *Queue
++   cdef char *Host
++   cdef int  Options
+ 
+-   if user == "": user = "all"
++   jobID = long(jobid)
++   Options = int(options)
+ 
+-   User = user
+-   job_num = c_lsb_openjobinfo(0, NULL, User, NULL, NULL, 17)
++   if queue == "":
++     Queue = NULL
++   else:
++     Queue = queue
++   if host == "":
++     Host = NULL
++   else:
++     Host = host
++   if user == "":
++     User = NULL
++   else:
++     User = user
++
++   #job_num = c_lsb_openjobinfo(jobID, NULL, User, NULL, NULL, 17)  #17 ~ ALL_JOB & HOST_NAME
++   #job_num = c_lsb_openjobinfo(jobID, NULL, User, NULL, NULL, 0)
++   job_num = c_lsb_openjobinfo(jobID, NULL, User, Queue, Host, Options)
+ 
+    return job_num
+ 
+@@ -3631,7 +3651,7 @@ def lsb_hostgrpinfo(host_list=[]):
+     cdef int  Options
+     cdef int  i
+ 
+-    Num_of_recs = len(group_list)
++    Num_of_recs = len(host_list)
+     Options = 0
+ 
+     Host_list = pyStringSeqToStringArray(host_list)
