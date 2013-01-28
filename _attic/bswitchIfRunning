@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+echo "This script has been made obsolete by jobwatch.  See the jobwatch -h examples." >&2
+exit 1
+
+while true; do
+	bjobs2 -o jobid -r -q short_parallel | while read jobid; do
+		bswitch long_parallel $jobid
+		date | mail -s "bswitch $jobid" john_brunelle@harvard.edu
+	done
+	if [ $(bjobs2 -p -q short_parallel | wc -l) -eq 0 ]; then
+		exit
+	fi
+	#FIXME -- job could've started running between these checks and will never get switched
+	sleep 60
+done

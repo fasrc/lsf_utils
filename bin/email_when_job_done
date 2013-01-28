@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+set -u
+
+jobid="$1"
+emailaddress="$2"
+
+if [ $(bjobs2 -u all -o jobid $jobid | wc -l) != 1 ]; then
+	echo "*** ERROR *** $jobid apparently specifies an array, and this could generate too much email in that case" >&2
+	exit 1
+fi
+
+jobwatch --match="-u all -d $jobid" --mail="$emailaddress" --keepgoing="-u all -r $jobid"
