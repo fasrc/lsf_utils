@@ -150,9 +150,9 @@ DESCRIPTION
             Show this help.
 
 REQUIREMENTS
-    custom python pylsf module
+    custom python pylsf module (see pylsf.pyx.patch in this repo)
 
-KNOWN BUGS / DEPARTURES FROM bjobs
+BUGS / DEPARTURES FROM bjobs
     There is no ZOMBIE state as with bjobs.  ZOMBIE jobs are reported as EXIT 
     along with other failures.
 
@@ -160,7 +160,7 @@ KNOWN BUGS / DEPARTURES FROM bjobs
 
 AUTHOR
     John Brunelle
-    Harvard University FAS DoS Research Computing
+    Harvard University FAS Research Computing
     rchelp@fas.harvard.edu
 """
 

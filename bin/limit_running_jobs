@@ -20,12 +20,8 @@ OPTIONS
 REQUIREMENTS
     n/a
 
-OPTIONS
-    -h, --help
-        Print this help.
-
 AUTHOR
-	John Brunelle
+    John Brunelle
 "
 
 getopt -q -l help -o h -- "$@" | egrep -q '^ -h|^ --help' && echo -n "$helpstr" && exit

@@ -28,12 +28,12 @@ AUTHOR
     John Brunelle
 "
 
-if getopt -q -l help -o h -- "$@" | egrep -q '^ -h|^ --help'; then echo -n "$helpstr"; exit; fi
+getopt -q -l help -o h -- "$@" | egrep -q '^ -h|^ --help' && echo -n "$helpstr" && exit
 
 set -u
 
 if ! which bjobs2 &>/dev/null; then
-	echo "*** ERROR *** this script needs bjobs2 from odyssey.git" >&2
+	echo "*** ERROR *** this script requires bjobs2" >&2
 	exit 1
 fi
 

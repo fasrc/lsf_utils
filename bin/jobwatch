@@ -38,9 +38,10 @@ OPTIONS
 REQUIREMENTS
     bjobs2
 
-EXAMPLE
+EXAMPLES
     mail when a job with id MYJOBID starts running
         jobwatch --match='-r MYJOBID' --mail=me@harvard.edu --keepgoing='-p MYJOBID'
+    
     the bswitch trick
         jobwatch --match='-r -q short_parallel' --action='bswitch long_parallel' --keepgoing='-p -q short_parallel' --mail=me@harvard.edu
 
