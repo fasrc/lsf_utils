@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+echo "*** ERROR *** This script has been made obsolete by jobwatch." >&2
+exit 1
+
+if [ "$#" -ne 2 ]; then
+	echo "*** ERROR *** usage: $(basename $0) USERNAME EMAILADDRESS" >&2
+	exit 1
+fi
+
+user="$1"
+email="$2"
+
+bjobsopts="-u $user -p -r -s"
+
+first=yes
+while true; do
+	date
+	if [ $(bjobs $bjobsopts | wc -l) -gt 1 ]; then  #this will print out "No pending job found" (or something like that) each iteration
+		echo "!!! GOT A JOB !!!"
+		bjobs $bjobsopts
+		if [ "$first" = yes ]; then
+			bjobs $bjobsopts -l | mail -s "job(s) by $user now in the system" $email
+			first=no
+		fi
+	fi
+
+	sleep 5
+done
