@@ -32,18 +32,18 @@ getopt -q -l help -o h -- "$@" | egrep -q '^ -h|^ --help' && echo -n "$helpstr" 
 
 prefix=''  #set this to 'echo' in order to just print the commands; leave as the empty string in order to run like normal
 
-SLEEP_INTERVAL=60  #seconds
+sleep_interval=60  #seconds
 
 if [ "$#" -eq 0 ]; then
 	echo "*** ERROR *** must provide the maximum number of jobs to allow to run" >&2
 	exit 1
 fi
 
-MAX_RUNNING="$1"
+max_running="$1"
 shift
 
-if [ "$MAX_RUNNING" -le 0 ]>/dev/null; then
-	echo "*** ERROR *** given maximum number of jobs [$MAX_RUNNING] is not an integer greater than zero" >&2
+if [ "$max_running" -le 0 ]>/dev/null; then
+	echo "*** ERROR *** given maximum number of jobs [$max_running] is not an integer greater than zero" >&2
 	exit 1
 fi
 
@@ -64,13 +64,13 @@ while true; do
 	jobids_s="$(bjobs2 "$@" -s -o 'jobid state' | grep -P 'USUSP|PSUSP' | awk '{print $1}' | sort)"  #-s pulls in SSUSP, too, which we don't want to touch
 	num_s="$(echo "$jobids_s" | wc -l)"
 
-	if   [ "$num_r" -gt $MAX_RUNNING ]; then
+	if   [ "$num_r" -gt $max_running ]; then
 		date
-		echo "$jobids_r" | tail -n $(( $num_r - $MAX_RUNNING )) | xargs $xargsnrie $prefix bstop
-	elif [ "$num_r" -lt $MAX_RUNNING ] && [ "$num_s" -gt 0 ]; then
+		echo "$jobids_r" | tail -n $(( $num_r - $max_running )) | xargs $xargsnrie $prefix bstop
+	elif [ "$num_r" -lt $max_running ] && [ "$num_s" -gt 0 ]; then
 		date
-		echo "$jobids_s" | head -n $(( $MAX_RUNNING - $num_r )) | xargs $xargsnrie $prefix bresume
+		echo "$jobids_s" | head -n $(( $max_running - $num_r )) | xargs $xargsnrie $prefix bresume
 	fi
 
-	sleep "$SLEEP_INTERVAL"
+	sleep "$sleep_interval"
 done

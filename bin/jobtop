@@ -44,13 +44,13 @@ AUTHOR
 getopt -q -l help -o h -- "$@" | egrep -q '^ -h|^ --help' && echo -n "$helpstr" && exit
 
 #trim top output to this number of lines (including the header) (an extra '...' line is added if the output is trimmed)
-NLINES=20
+nlines=20
 
 #run this number off ssh commands in parallel (note that all text munging is done locally and also affected by this parallelism)
-FANOUT=12
+fanout=12
 
 #base path/filename for temporary files
-TMPFILEBASE=/tmp/"$(basename "$0")".$$
+tmpfilebase=/tmp/"$(basename "$0")".$$
 
 #create a regex of the username(s) to grep the the output of top for
 #take as-is, if -u is specified
@@ -65,31 +65,31 @@ fi
 #[ -z "$user" ] && user="."
 
 #delete all temporary files when we're done
-trap "{ rm -f \"$TMPFILEBASE\"* ; }" EXIT
+trap "{ rm -f \"$tmpfilebase\"* ; }" EXIT
 
 #see if stdout is a terminal
-[[ $(stat -c%F $(readlink -f /proc/$$/fd/1)) == character* ]] && STDOUT_IS_TERM=true || STDOUT_IS_TERM=false
+[[ $(stat -c%F $(readlink -f /proc/$$/fd/1)) == character* ]] && stdout_is_term=true || stdout_is_term=false
 
 set -e
 
 #---
 
 #print a warning that this could take a while (only if stdout is a terminal)
-$STDOUT_IS_TERM && echo -en '  Running commands in parallel in the background, please wait for report...\r'
+$stdout_is_term && echo -en '  Running commands in parallel in the background, please wait for report...\r'
 
 #get the total number of cores allocated by these jobs on each host
-bjobs2 -o nXhosts -r "$@" | awk -F'*' '{ncores[$2]+=$1} END {for (host in ncores) print host" "ncores[host]}' > "$TMPFILEBASE.ncores"
+bjobs2 -o nXhosts -r "$@" | awk -F'*' '{ncores[$2]+=$1} END {for (host in ncores) print host" "ncores[host]}' > "$tmpfilebase.ncores"
 
 #runs the ssh commands (and text munging) in parallel, storing out put in temporary files
-bjobs2 -o hosts -r "$@" | sort | uniq | xargs -I% -P"$FANOUT" bash -c 'ssh -o PreferredAuthentications=publickey '%' top -bn1 | tail -n +7 | grep -P '\''^ *PID|'"$user"\'' | grep -Pv '\''res|orted|TaskStarter|pam|mpirun|openmpi_wrapper|\d+\.\d+ *$'\'' | head -n '"$NLINES"' | sed "'"$NLINES"' a ..."  > '"$TMPFILEBASE"'.topout.%'
+bjobs2 -o hosts -r "$@" | sort | uniq | xargs -I% -P"$fanout" bash -c 'ssh -o PreferredAuthentications=publickey '%' top -bn1 | tail -n +7 | grep -P '\''^ *PID|'"$user"\'' | grep -Pv '\''res|orted|TaskStarter|pam|mpirun|openmpi_wrapper|\d+\.\d+ *$'\'' | head -n '"$nlines"' | sed "'"$nlines"' a ..."  > '"$tmpfilebase"'.topout.%'
 
 #erase that above warning, if applicable
-$STDOUT_IS_TERM && echo -en '                                                                           \r'
+$stdout_is_term && echo -en '                                                                           \r'
 
 shopt -s nullglob
-for f in "$TMPFILEBASE".topout.*; do
+for f in "$tmpfilebase".topout.*; do
 	host=$(echo "$f" | awk -F. '{print $NF}')
-	cores=$(cat "$TMPFILEBASE.ncores" | awk /$host/' {print $2}')
+	cores=$(cat "$tmpfilebase.ncores" | awk /$host/' {print $2}')
 	test -z "$cores" && cores='?'  #(things may become inconsistent during the finite time that this script runs)
 	echo "$host, $cores core(s) allocated, jobs: $(bjobs2 -r "$@" -m $host -o jobid | tr '\n' ' ')"
 	cat "$f"
