@@ -476,7 +476,8 @@ def zero2NA(x):
 
 def ctime(sec):
 	if sec==0: return 'N/A'
-	try: return(time.ctime(sec))
+	#try: return(time.ctime(sec))
+	try: return time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(sec))
 	except (TypeError, ValueError): return str(sec)
 
 def pendTime(submitTime, startTime, endTime):
