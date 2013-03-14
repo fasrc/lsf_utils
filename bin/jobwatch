@@ -109,7 +109,9 @@ while true; do
 		fi
 
 		if [ -n "$mail" ]; then
-			msg="$(basename $0): found a job matching [$match] and took action [$action] at [$(date)]"
+			actionmsg='none'
+			test -n "$action" && actionmsg="$action"
+			msg="$(basename $0): found a job matching [$match] and took action [$actionmsg] at [$(date)]"
 			echo "$msg" | mail -s "$msg" "$mail"
 		fi
 	done
