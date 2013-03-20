@@ -7,4 +7,4 @@ test: d_lfs_migrate
 all: d_lfs_migrate
 
 clean:
-	rm d_lfs_migrate 0*.stdout 0*.stderr
+	rm -f d_lfs_migrate 0*.stdout 0*.stderr
