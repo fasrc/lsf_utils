@@ -40,7 +40,7 @@ for f in "$@"; do
 	echo "working on ${f}..."
 	newname="lsb.acct.$(date +%Y%m%d%H%M%S -d @$(head -n 1 "$f" | awk '{print $3}'))"-"$(date +%Y%m%d%H%M%S -d @$(tail -n 1 "$f" | awk '{print $3}'))"
 	if echo "$newname" | grep -qP 'lsb.acct.\d{14}-\d{14}'; then
-		mv -n -v "$f" "$newname"
+		mv -i -v "$f" "$newname"  #(want to use mv -n, but not all versions have that)
 	else:
 		echo "*** ERROR *** unable to rename [$f], skipping" >&2
 	fi
