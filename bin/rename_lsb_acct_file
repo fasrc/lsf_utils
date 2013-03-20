@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+##will move on to the next file if some other fails
+#set -e
+
+helpstr="\
+NAME
+    rename_lsb_acct_file - add a date range suffix to an lsb.acct filename
+
+SYNOPSIS
+    rename_lsb_acct_file FILENAME...
+
+DESCRIPTION
+    Change any file, regardless of its current name, with first and last lines 
+    in lsb.acct format to the name:
+
+    lsb.acct.yyyymmddhhmmss-YYYYMMDDHHMMSS
+
+    Where yyyymmddhhmmss is the date of the first even in the file, and 
+    YYYYMMDDHHMMSS is the last.
+
+OPTIONS
+    -h, --help
+        Print this help.
+
+REQUIREMENTS
+    n/a
+
+AUTHOR
+    John Brunelle
+"
+
+getopt -q -l help -o h -- "$@" | egrep -q '^ -h|^ --help' && echo -n "$helpstr" && exit
+
+set -u
+
+#---
+
+
+for f in "$@"; do
+	echo "working on ${f}..."
+	newname="lsb.acct.$(date +%Y%m%d%H%M%S -d @$(head -n 1 "$f" | awk '{print $3}'))"-"$(date +%Y%m%d%H%M%S -d @$(tail -n 1 "$f" | awk '{print $3}'))"
+	if echo "$newname" | grep -qP 'lsb.acct.\d{14}-\d{14}'; then
+		mv -n -v "$f" "$newname"
+	else:
+		echo "*** ERROR *** unable to rename [$f], skipping" >&2
+	fi
+	echo
+done
