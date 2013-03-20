@@ -45,7 +45,7 @@ for f in "$@"; do
 			echo "*** ERROR *** error renaming [$f], skipping" >&2
 		fi
 	else
-		echo "*** ERROR *** unable to come up with new name for [$f], skipping" >&2
+		echo "*** ERROR *** unable to come up with new name for [$f], maybe not an lsb.acct file, skipping" >&2
 	fi
 	echo
 done
