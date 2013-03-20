@@ -42,10 +42,10 @@ for f in "$@"; do
 	if echo "$newname" | grep -qP 'lsb.acct.\d{14}-\d{14}'; then
 		mv -i -v "$f" "$newname"  #(want to use mv -n, but not all versions have that)
 		if [ $? -ne 0 ]; then
-			echo "*** ERROR *** error renaming [$f], skipping" >&2
+			echo "*** ERROR *** error renaming [$f], skipping" >&2  #(actual command should've given more detailed error)
 		fi
 	else
-		echo "*** ERROR *** unable to come up with new name for [$f], maybe not an lsb.acct file, skipping" >&2
+		echo "*** ERROR *** unable to come up with new name for [$f], maybe not an lsb.acct file, skipping" >&2  #(actual command should've given more detailed error)
 	fi
 	echo
 done
