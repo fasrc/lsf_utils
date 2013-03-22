@@ -27,57 +27,51 @@ John Brunelle
 char find_only = 1;
 
 static int lfs_migrate(const char *fpath, const struct stat *sb, int tflag) {
-	struct lov_user_md_v1 *lum;  //lustre stripe info
-	int ostidx;                  //OST number
-	
-	
-	pid_t pid = 0;   //process id
-	int status = 0;  //child status
-	int r = 0;       //function return value
-	
-	char *args[] = {"lfs_migrate", "-n", (char*)NULL, (char*)NULL};
-	char *fpathc = NULL;
-
 	switch (tflag) {
 		case FTW_D:
-			break;
+			return 0;
 		case FTW_DNR:
 			fprintf(stderr, "unreadable directory: %s\n", fpath);
-			break;
+			return 1;
 		case FTW_NS:
 			fprintf(stderr, "unstatable file: %s\n", fpath);
-			break;
-		default:
+			return 0;
+		default: {
+			struct lov_user_md_v1 *lum;  //lustre stripe info
+			int ostidx;                  //OST number
+			
 			lum = malloc(LOV_EA_MAX(lum));
 			if (lum==NULL) {
 				fprintf(stderr, "*** ERROR *** malloc failed\n");
+				return 1;
 			} else {
+				int r = -1;  //return value
 				r = llapi_file_get_stripe(fpath, lum);
 				if (r != 0) {
 					fprintf(stderr, "*** ERROR *** llapi_file_get_stripe of [%s] failed with return value [%d]\n", fpath, r);  //docs say it sets errno, I find that's not the case
+					free(lum);
+					return 0;
 				} else {
 					ostidx = lum->lmm_objects[0].l_ost_idx;
-					//fprintf(stdout, "got a file: %s: obdidx: %d\n", fpath, ostidx);
 				
-					if (!find_only) {
-						//(it would be better to do this only in the child, but fork() support in mpi on openib is very fragile, so keeping as much as possible in the parent)
-						fpathc = (char *)malloc((strlen(fpath)+1) * sizeof(*fpathc));
-						if (fpathc==NULL) { fprintf(stderr, "*** ERROR *** malloc failed\n"); exit(1); }
-						strcpy(fpathc, fpath);
-						args[2] = fpathc;
-					}
-					
 					if (ostidx==6) {
 						if (find_only) {
 							fprintf(stdout, "found a file on to migrate, on obdidx %d: %s\n", ostidx, fpath);
 						} else {
+							char *argv[] = {"lfs_migrate", "-n", (char*)NULL, (char*)NULL};
+							pid_t pid = 0;   //process id
+							int status = 0;  //child status
+
+							argv[2] = (char*)fpath;  //(casting away const here is fine -- execvp's argv is "completely constant" and would've been declared that way if it weren't for C limitations)
+							
 							pid = fork();
 							if (pid==-1) {
 								fprintf(stderr, "*** ERROR *** (parent) failed to fork, errno: %d\n", errno);
+								free(lum);
 								return errno;
 							}
 							if (pid==0) {
-								execvp(args[0], args);
+								execvp(argv[0], argv);
 								//(control only gets here if exec fails)
 								_exit(errno);  //(note that errno will be ENOENT (2) if binary of library is not found, not 127 like shell uses)
 							}
@@ -95,21 +89,15 @@ static int lfs_migrate(const char *fpath, const struct stat *sb, int tflag) {
 							}
 						}
 					}
-
-					if (!find_only) {
-						free(fpathc); fpathc = NULL;
-					}
 				}
+				free(lum); lum = NULL;
 			}
-			free(lum); lum = NULL;
+			return 0;
+		}
 	}
-
-    return 0;
 }
 
 int main(int argc, char **argv) {
-	int rank;
-
     if(argc != 2) {
         fprintf(stderr, "Usage: %s <path>\n", argv[0]);
         exit(EXIT_FAILURE);

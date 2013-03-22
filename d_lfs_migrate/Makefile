@@ -9,7 +9,7 @@ endif
 
 test: d_lfs_migrate test_path
 	mpirun -np 3 -mca btl tcp,self -mca mpi_warn_on_fork 0 ./d_lfs_migrate $(D_LFS_MIGRATE_TEST_PATH)
-	echo "now look at *.stdout and *.stderr (e.g.: cat *.stderr && cat *.stdout | grep 'found a file' | sort | md5sum")
+	@echo "now look at *.stdout and *.stderr (e.g.: cat *.stderr && cat *.stdout | grep 'found a file' | sort | md5sum)"
 
 
 all: d_lfs_migrate
