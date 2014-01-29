@@ -8,10 +8,10 @@
 
 # uses parse ( c code to pull out data from the lsb events files)
 
-$database = "lsflnx";
-$host = "mysql";
-$user = "ensrw";
-$pass = "ensembl";
+$database = "XXXXXXXX";
+$host = "XXXXXXXX";
+$user = "XXXXXXXX";
+$pass = "XXXXXXXX";
 
 use DBI;
 $|=1;

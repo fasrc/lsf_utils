@@ -4,9 +4,9 @@
 # pull statistics from a mysql db with lsf acct info
 #
 
-$database = "lsfhist";
-$host = "127.0.0.1";
-$port = "33069";
+$database = "XXXXXXXX";
+$host = "XXXXXXXX";
+$port = "XXXXXXXX";
 $user = "XXXXXXXX";
 $pass = "XXXXXXXX";
 

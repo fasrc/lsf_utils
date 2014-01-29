@@ -4,10 +4,10 @@
 # pull statistics from a mysql db with lsf acct info
 #
 
-$database = "lsf";
-$host = "lead";
-$user = "ensrw";
-$pass = "ensembl";
+$database = "XXXXXXXX";
+$host = "XXXXXXXX";
+$user = "XXXXXXXX";
+$pass = "XXXXXXXX";
 
 use DBI;
 $|=1;
