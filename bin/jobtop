@@ -81,7 +81,7 @@ $stdout_is_term && echo -en '  Running commands in parallel in the background, p
 bjobs2 -o nXhosts -r "$@" | awk -F'*' '{ncores[$2]+=$1} END {for (host in ncores) print host" "ncores[host]}' > "$tmpfilebase.ncores"
 
 #runs the ssh commands (and text munging) in parallel, storing out put in temporary files
-bjobs2 -o hosts -r "$@" | sort | uniq | xargs -I% -P"$fanout" bash -c 'ssh -o PreferredAuthentications=publickey '%' top -bn1 | tail -n +7 | grep -P '\''^ *PID|'"$user"\'' | grep -Pv '\''res|orted|TaskStarter|pam|mpirun|openmpi_wrapper|\d+\.\d+ *$'\'' | head -n '"$nlines"' | sed "'"$nlines"' a ..."  > '"$tmpfilebase"'.topout.%'
+bjobs2 -o hosts -r "$@" | sort | uniq | xargs -I% -P"$fanout" bash -c 'ssh -o PreferredAuthentications=publickey '%' top -bn1 | tail -n +7 | grep -P '\''^ *PID|'"${user:0:8}"\'' | grep -Pv '\''res|orted|TaskStarter|pam|mpirun|openmpi_wrapper|\d+\.\d+ *$'\'' | head -n '"$nlines"' | sed "'"$nlines"' a ..."  > '"$tmpfilebase"'.topout.%'
 
 #erase that above warning, if applicable
 $stdout_is_term && echo -en '                                                                           \r'
