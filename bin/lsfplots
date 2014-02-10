@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+set -e
+
+helpstr="\
+NAME
+	lsfplots - create plots of Odyssey cluster usage
+
+SYNOPSIS
+	lsfplots VARIABLES_FILE...
+
+DESCRIPTION
+	This just runs bjobs2 and logstats with common options for plots applicable 
+	to LSF logs.  VARIABLES_FILE should be a shell script setting values of the 
+	variables this script requires.  Run \`lsfplots --create-sample-input-file' 
+	to create a sample input file, and go from there.  VARIABLES_FILE is 
+	sourced, be careful what commands you put in it.
+
+OPTIONS
+	-c, --create-sample-input-file
+		Create a new file in the current directory, which you should edit and 
+		then pass as an argument to this script, and exit immediately.
+	
+	--no-screen-check
+		Since running this script often takes many hours to run, it's advisable 
+		to run it in a screen session.  By default, this'll prompt you for 
+		confirmation if stdout is a tty and you're not using screen.  Use this 
+		option to skip this check.
+
+	-h, --help
+		Print this help.
+"
+
+sample_input_filename='lsfplots.in'
+create_sample_input_file=false
+no_screen_check=false
+
+args=$(getopt -l create-sample-input-file,no-screen-check,help -o ch -- "$@")
+if [ $? -ne 0 ]; then
+	exit 65  #(getopt will have written the error message)
+fi
+eval set -- "$args"
+while [ ! -z "$1" ]; do
+	case "$1" in
+		-c | --create-sample-input-file)
+			create_sample_input_file=true
+			;;
+		--no-screen-check)
+			no_screen_check=true
+			;;
+
+		-h | --help)
+			echo -n "$helpstr"
+			exit 0
+			;;
+		--) 
+			shift
+			break
+			;;
+	esac
+	shift
+done
+
+$create_sample_input_file && no_screen_check=true
+
+if ! $create_sample_input_file && [ -z "$@" ]; then
+	echo "*** ERROR *** usage:" >&2
+	echo "$(basename "$0") --create-sample-input-file  #writes lsfplots.in" >&2
+	echo "vim lsfplots.in  #fill in the variables appropriately" >&2
+	echo "$(basename "$0") lsfplots.in  #wait a long time" >&2
+	exit 1
+fi
+
+set -u
+
+
+#---
+
+
+if ! $no_screen_check; then
+	if [ -t 0 ] && [ "$TERM" != 'screen' ]; then
+		read -p "You're apparently not in a screen session, and this often takes many hours to run, keep going anyways? [y/n]: " answer
+		if [ "$answer" != 'y' ]; then
+			exit 0
+		fi
+	fi
+fi
+
+if $create_sample_input_file; then
+	if [ -e "$sample_input_filename" ]; then
+		echo "*** ERROR *** file [$sample_input_filename] already exists" >&2
+		exit 1
+	fi
+	cat > "$sample_input_filename" <<-'EOF'
+#!/usr/bin/env bash
+
+#options passed to bjobs2 (like bjobs) for selecting jobs of interest
+#use -u USERNAME|GROUPNAME here unless you really just want stats on yourself
+bjobs2_job_opts="-u all"
+
+#options passed for bjobs2 for what lsb.acct files to look at
+#default is to look at all files in the live LSF location
+#use something like --acct-dir /n/RC_Team/lsf_logs.sorted/acct to look somewhere else
+#use --acct-start X to save time and skip older log files (run bjobs2 --acct-list to help pick an appropriate value of X)
+bjobs2_acct_opts=""
+
+#time unit to use in the plots
+#Minute, Hour, Day, Week, Month, or Year
+time_unit="Week"
+
+#range of bjobs2 output to plot; use the empty string to set no limit
+#the bjobs2 output, as controlled by bjobs2_acct_opts above (i.e. which log files it looks at), must contain this range
+logstats_tstart="2010-10-01 00:00:00"
+logstats_tend="2011-09-30 23:59:59"
+
+#extra options passed to the command that creates the pie chart of the breakdown by user
+#use --breakdown-threshold-percent X to group all entries where the value is < X% of the total into one 'OTHER' entry
+logstats_cpu_userbreakdown_extra_opts="--breakdown-threshold-percent 2"
+
+#various plot titles
+logstats_cpu_all_timeseries_title="Odyssey Cluster Usage\nCPU ${time_unit}s per Calendar ${time_unit}"
+logstats_cpu_userbreakdown_timeseries_title="Odyssey Cluster Usage\nCPU ${time_unit}s per Calendar ${time_unit}"
+logstats_cpu_userbreakdown_piechart_title="Odyssey Cluster CPU Usage\n$logstats_tstart - $logstats_tend"
+EOF
+	echo "wrote [$sample_input_filename], now edit it and rerun this script with it as the only argument"
+	exit 0
+fi
+
+
+module load hpc/python-2.6.2
+
+log () {
+	echo "$(date): $1"
+}
+
+makeSimpleText () {
+	echo "$@" | sed 's/[^a-zA-Z0-9_\-]/_/g'
+}
+
+for f in "$@"; do
+	echo ""
+	echo ""
+	echo "==="
+	echo "=== working on input [$f]"
+	echo "==="
+
+	source "$f"
+
+	time_unit_lowercase=$(echo "$time_unit" | tr '[:upper:]' '[:lower:]')
+	
+	
+	#=== bjobs2
+
+	echo
+	echo
+	echo "=== bjobs2"
+
+	bjobs2out=bjobs2.out."$(makeSimpleText "${bjobs2_job_opts}_${bjobs2_acct_opts}")"
+
+	if [ -e "$bjobs2out" ]; then
+		log "bjobs2 output matching given options [${bjobs2out}] already found, skipping bjobs2 step"
+	else
+		log "running bjobs2 to parse LSF logs, creating [$bjobs2out]..."
+		time bjobs2 $bjobs2_job_opts --acct $bjobs2_acct_opts -o 'endTime: jobid user queue pend=pendTime cpu=cpuTime wall=wallTime mem=maxMem' > "$bjobs2out"
+	fi
+
+
+	#=== logstats
+
+	echo
+	echo
+	echo "=== logstats"
+
+	echo
+	echo "--- logstats, cpu, all, time series"
+	logstats --sum 'CPU Time: cpu=(\d+\.\d+)' --units "CPU ${time_unit}s" -t ${time_unit_lowercase}s --units-conversion-factor seconds-to-${time_unit_lowercase}s --tstart "$logstats_tstart" --tend "$logstats_tend" --save-plots --title "$logstats_cpu_all_timeseries_title" "$bjobs2out"
+
+	echo
+	echo "--- logstats, cpu, userbreakdown, time series"
+	logstats --sum 'CPU Time: cpu=(\d+\.\d+)' --units "CPU ${time_unit}s" -t ${time_unit_lowercase}s --units-conversion-factor seconds-to-${time_unit_lowercase}s --tstart "$logstats_tstart" --tend "$logstats_tend" --save-plots --breakdown-by-column-number 7 --title "$logstats_cpu_userbreakdown_timeseries_title" $logstats_cpu_userbreakdown_extra_opts "$bjobs2out"
+
+	echo
+	echo "--- logstats, cpu, userbreakdown, piechart"
+	logstats --sum 'CPU Time: cpu=(\d+\.\d+)' --units "CPU ${time_unit}s" -t ${time_unit_lowercase}s --units-conversion-factor seconds-to-${time_unit_lowercase}s --tstart "$logstats_tstart" --tend "$logstats_tend" --save-plots --breakdown-by-column-number 7 --totals-only --pie-charts --legend-off --title "$logstats_cpu_userbreakdown_piechart_title"  $logstats_cpu_userbreakdown_extra_opts "$bjobs2out"
+done
